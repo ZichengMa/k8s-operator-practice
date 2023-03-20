@@ -48,10 +48,27 @@ type CronJobReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.14.1/pkg/reconcile
 func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	l := log.FromContext(ctx)
 
 	// TODO(user): your logic here
-	l.Info("Enter concile loop", "req is ", req)
+	log := log.FromContext(ctx)
+	var cronJob batchv1.CronJob
+	if err := r.Get(ctx, req.NamespacedName, &cronJob); err != nil {
+		log.Error(err, "unable to fetch CronJob")
+		// we'll ignore not-found errors, since they can't be fixed by an immediate
+		// requeue (we'll need to wait for a new notification), and we can get them
+		// on deleted requests.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	var childJobs kbatch.JobList
+	if err := r.List(ctx, &childJobs, client.InNamespace(req.Namespace), client.MatchingFields{jobOwnerKey: req.Name}); err != nil {
+		log.Error(err, "unable to list child Jobs")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Enter concile loop", "req is ", req)
+	fmt.Println(cronJob)
+
 	fmt.Println("Enter concile loop!")
 	return ctrl.Result{}, nil
 }
