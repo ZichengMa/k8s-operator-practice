@@ -1,0 +1,12 @@
+apiVersion: batch.tutorial.kubebuilder.io/v1
+kind: PodSet
+metadata:
+  labels:
+    app.kubernetes.io/name: podset
+    app.kubernetes.io/instance: podset-sample
+    app.kubernetes.io/part-of: operator-practice
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: operator-practice
+  name: podset-sample
+spec:
+  # TODO(user): Add fields here

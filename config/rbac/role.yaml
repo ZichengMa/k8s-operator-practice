@@ -31,3 +31,29 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - batch.tutorial.kubebuilder.io
+  resources:
+  - podsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - batch.tutorial.kubebuilder.io
+  resources:
+  - podsets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - batch.tutorial.kubebuilder.io
+  resources:
+  - podsets/status
+  verbs:
+  - get
+  - patch
+  - update
