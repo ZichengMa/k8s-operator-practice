@@ -18,13 +18,16 @@ package controllers
 
 import (
 	"context"
+	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	batchv1 "tutorial.kubebuilder.io/operator-practice/api/v1"
@@ -50,7 +53,7 @@ type PodSetReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.14.1/pkg/reconcile
 func (r *PodSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	log := log.FromContext(ctx)
 
 	// TODO(user): your logic here
 
@@ -87,7 +90,115 @@ func (r *PodSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
+	// Count the pods that are pending or running as available
+	var available []corev1.Pod
+	for _, pod := range podList.Items {
+		// For each pod, it first checks whether the DeletionTimestamp field is set.
+		// If it is, this means that the pod is scheduled for deletion, and the code skips it
+		if pod.ObjectMeta.DeletionTimestamp != nil {
+			continue
+		}
+		// If the pod is not scheduled for deletion, then check whether the pod's Status.Phase field is set to either corev1.PodRunning or corev1.PodPending.
+		// If the pod is in one of these states, it is considered available, and its reference is added to the available slice.
+		if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending {
+			available = append(available, pod)
+		}
+	}
+	numAvailable := int32(len(available)) // get the number of available pods
+
+	// This code block creates a new slice of strings called availableNames,
+	// which contains the names of all the available pods returned by the previous code block.
+	availableNames := []string{}
+	for _, pod := range available {
+		availableNames = append(availableNames, pod.ObjectMeta.Name)
+	}
+
+	// Update the status if necessary
+	status := batchv1.PodSetStatus{
+		PodNames:      availableNames,
+		ReadyReplicas: numAvailable,
+	}
+	// The code first checks whether the podset.Status field is equal to the new status value using the reflect.DeepEqual() function.
+	// If the two values are not equal, it means that the status value has been updated and needs to be written back to the Kubernetes API server.
+	if !reflect.DeepEqual(podset.Status, status) {
+		podset.Status = status
+		err = r.Status().Update(context.TODO(), podset)
+		if err != nil {
+			log.Error(err, "Failed to update PodSet status")
+			return ctrl.Result{}, err
+		}
+	}
+
+	if numAvailable == podset.Spec.Replicas {
+		// If the number of available pods is equal to the number of replicas specified in the podset.Spec.Replicas field,
+		// then the controller returns a ctrl.Result{} object without an error to indicate that the reconciliation is complete.
+		return ctrl.Result{}, nil
+	}
+
+	// Scale up or down
+	if numAvailable > podset.Spec.Replicas {
+		log.Info("Scaling down pods", "Currently available", numAvailable, "Required replicas", podset.Spec.Replicas)
+		diff := numAvailable - podset.Spec.Replicas
+		dpods := available[:diff]
+		for _, dpod := range dpods {
+			err = r.Delete(context.TODO(), &dpod) // Writer interface --> Create Delete Update ...
+			if err != nil {
+				log.Error(err, "Failed to delete pod", "pod.name", dpod.Name)
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if numAvailable < podset.Spec.Replicas {
+		log.Info("Scaling up pods", "Currently available", numAvailable, "Required replicas", podset.Spec.Replicas)
+		// Define a new Pod object
+		pod := newPodForCR(podset)
+		// Set PodSet instance as the owner and controller
+		// This ensures that the new pod is "owned" by the PodSet object and is managed by the controller.
+		// When a child object is created, it is important to set a reference to its owner object using the SetControllerReference function.
+		// This ensures that the owner object is set as the "controller" of the child object,
+		// which allows Kubernetes to automatically manage the child object's lifecycle and ensures that it is deleted when the owner object is deleted.
+		if err := controllerutil.SetControllerReference(podset, pod, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		err = r.Create(context.TODO(), pod)
+		if err != nil {
+			log.Error(err, "Failed to create pod", "pod.name", pod.Name)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
 	return ctrl.Result{}, nil
+}
+
+// TODO: Add a function called newPodForCR() that creates a new pod object for the podset object passed as an argument.
+// args: podset *batchv1.PodSet
+// newPodForCR returns a busybox pod with the same name/namespace as the cr
+func newPodForCR(cr *batchv1.PodSet) *corev1.Pod {
+	// creates a map of labels called labels, which contains two key-value pairs:
+	// app set to the name of the PodSet object, and version set to "v0.1".
+	// These labels are used to identify the pods created by the PodSet object.
+	labels := map[string]string{
+		"app":     cr.Name,
+		"version": "v0.1",
+	}
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: cr.Name + "-pod-", // GenerateName is used to generate a unique name for the pod.
+			Namespace:    cr.Namespace,
+			Labels:       labels,
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:    "busybox",
+					Image:   "busybox",
+					Command: []string{"sleep", "3600"},
+				},
+			},
+		},
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
